@@ -261,7 +261,7 @@ def estimate_from_llhp(
         weights = np.ones(shape=len(llh))
 
     if treat_dims_independently:
-        weights = {d: deepcopy(weights) for d in priors_used.keys()}
+        weights = {dim: deepcopy(weights) for dim in priors_used.keys()}
 
     if remove_priors:
         # calculate the prior weights from the priors used

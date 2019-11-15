@@ -63,7 +63,7 @@ PRI_LOG_UNIFORM = "retro_loguniform_prior"
 PRI_ZEN_COSINE = "retro_zen_cosine_prior"
 PRI_INTERP = "retro_interpolated_prior"
 PRI_AZ_INTERP = "retro_azimuth_interpolated_prior"
-PRI_TIME_RANGE = "time_range"
+PRI_TIME_RANGE = "retro_time_range_prior"
 
 PRI_OSCNEXT_L5_V1_PREFIT = "retro_oscnext_l5_v1_prefit_prior"
 """Priors from L5_SPEFit11 (and fallback to LineFit_DC) fits to oscNext level 5
@@ -424,16 +424,20 @@ def get_prior_func(
         Bound.REL). If any bound is relative, `extents_relative_to` must be
         specified.
 
-    extents_relative_to : str, scalar, or None; required if any `extents` are relative
-        Specify similarly to `center_relative_to`, but this value determines
-        which point relative bound(s) are centered about.
+        For example, .. ::
+
+            ((-25, Bound.REL), (100, Bound.ABS))
+
+    extents_relative_to : str or scalar, or 2-sequence thereof; or None; required if any `extents` are relative
+        Specify similarly to `center_relative_to`, but this value or values determine
+        which point(s) relative bound(s) are centered about.
 
     event : event dict or None, required sometimes
         Required if
 
             * KDE-derived priors are used
-            * Relative center and/or bounds that are specified by a string that
-              contains "event"
+            * `center_relative_to` is specified and/or any bound is specified
+              as Bound.REL
 
     kwargs : mapping, required if prior takes additional arguments
         Additional arguments to prior `kind`. E.g., `kind="norm"` requires `loc`
@@ -464,82 +468,6 @@ def get_prior_func(
         (i.e., save this information to disk)
 
     """
-    # -- Set default prior kind & extents depending on dimension name -- #
-
-    if "zenith" in dim_name:
-        if kind is None:
-            kind = PRI_ZEN_COSINE
-        if extents is None:
-            extents = ((0, Bound.ABS), (np.pi, Bound.ABS))
-    elif "coszen" in dim_name:
-        if kind is None:
-            kind = PRI_UNIFORM
-        if extents is None:
-            extents = ((-1, Bound.ABS), (1, Bound.ABS))
-    elif "azimuth" in dim_name:
-        if kind is None:
-            kind = PRI_UNIFORM
-        if extents is None:
-            extents = ((0, Bound.ABS), (2 * np.pi, Bound.ABS))
-    elif dim_name == "x":
-        if kind is None:
-            kind = PRI_UNIFORM
-        if extents is None:
-            extents = EXT_IC[dim_name]
-    elif dim_name == "y":
-        if kind is None:
-            kind = PRI_UNIFORM
-        if extents is None:
-            extents = EXT_IC[dim_name]
-    elif dim_name == "z":
-        if kind is None:
-            kind = PRI_UNIFORM
-        if extents is None:
-            extents = EXT_IC[dim_name]
-
-    elif dim_name == "time":
-        if kind is None:
-            kind = PRI_TIME_RANGE
-
-        if extents is None or kind == PRI_TIME_RANGE:
-            tr_keys = []
-            for key in event["pulses"].keys():
-                if key.endswith("TimeRange"):
-                    tr_keys.append(key)
-            if not tr_keys:
-                raise KeyError("No <pulse series>TimeRange key in pulses")
-            if len(tr_keys) > 1:
-                sys.stderr.write(
-                    "WARNING: found multiple <pulse series>TimeRange keys, using the"
-                    " first of {}\n".format(tr_keys)
-                )
-            time_range = event["pulses"][tr_keys[0]]
-
-            if extents is None:
-                low = 0
-                high = 0
-            else:
-                (low, low_bound_kind), (high, high_bound_kind) = extents
-                assert low_bound_kind == Bound.REL
-                assert high_bound_kind == Bound.REL
-
-            extents = ((time_range[0] + low, Bound.ABS), (time_range[1] + high, Bound.ABS))
-
-        if kind == PRI_TIME_RANGE:
-            kind = PRI_UNIFORM
-
-    elif "energy" in dim_name:
-        if kind is None:
-            kind = PRI_UNIFORM
-        if extents is None:
-            if kind in ("lognorm", PRI_LOG_UNIFORM):
-                extents = ((0.1, Bound.ABS), (1e3, Bound.ABS))
-            else:
-                extents = ((0.0, Bound.ABS), (1e3, Bound.ABS))
-
-    else:
-        raise ValueError('Unrecognized dimension "{}"'.format(dim_name))
-
     # -- Re-cast priors as something simple to make a func out of -- #
 
     misc = OrderedDict()
@@ -553,7 +481,7 @@ def get_prior_func(
                 )
             )
         prior_def = (kind, (low, high))
-    elif kind == PRI_OSCNEXT_L5_V1_PREFIT:
+    if kind == PRI_OSCNEXT_L5_V1_PREFIT:
         prior_def, misc = define_prior_from_prefit(
             dim_name=dim_name,
             event=event,
@@ -574,6 +502,7 @@ def get_prior_func(
     elif hasattr(stats.distributions, kind):
         prior_def = define_generic_prior(kind, extents, kwargs)
     else:
+        prior_def = (kind, (low, high))
         raise ValueError(
             'Unhandled or invalid prior "{}" for dim_name "{}"'.format(kind, dim_name)
         )

@@ -998,7 +998,7 @@ class Reco(object):
                 dim_num=dim_num, dim_name=dim_name, event=self.event, **spec
             )
             prior_funcs.append(prior_func)
-            self.priors_used[dim_name] = prior_pdf_func
+            self.priors_used[dim_name] = (prior_func, prior_pdf_func, misc)
             miscellany.append(misc)
 
         def prior(cube, ndim=None, nparams=None):  # pylint: disable=unused-argument, inconsistent-return-statements
