@@ -34,7 +34,7 @@ elif method == "stopping_atm_muon_crs":
         z=dict(kind=PRI_UNIFORM, extents=EXT_IC["z"]),
         time=dict(kind=PRI_TIME_RANGE),
         track_zenith=dict(
-            kind=PRI_COSINE, extents=((0, Bound.ABS), (np.pi / 2, Bound.ABS))
+            kind="cosine", extents=((0, Bound.ABS), (np.pi / 2, Bound.ABS))
         ),
     )
 

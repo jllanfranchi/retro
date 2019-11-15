@@ -55,7 +55,7 @@ from retro.hypo.discrete_cascade_kernels import SCALING_CASCADE_ENERGY
 from retro.hypo.discrete_muon_kernels import pegleg_eval
 from retro.priors import (
     EXT_IC,
-    PRI_COSINE,
+    PRI_ZEN_COSINE,
     PRI_TIME_RANGE,
     PRI_UNIFORM,
     PRISPEC_OSCNEXT_PREFIT_TIGHT,
@@ -77,6 +77,7 @@ LLH_FUDGE_SUMMAND = -1000
 
 METHODS = set(
     [
+        "example",
         "multinest",
         "crs",
         "crs_prefit",
@@ -507,6 +508,56 @@ class Reco(object):
                 save=save_estimate,
             )
 
+        elif method == "example":
+            self.setup_hypo(
+                cascade_kernel="scaling_aligned_point_ckv",
+                track_kernel="pegleg",
+                track_time_step=3.0,
+            )
+
+            self.generate_prior_method(
+                x=dict(kind=),
+            )
+
+            param_values = []
+            log_likelihoods = []
+            aux_values = []
+            t_start = []
+
+            self.generate_loglike_method(
+                param_values=param_values,
+                log_likelihoods=log_likelihoods,
+                aux_values=aux_values,
+                t_start=t_start,
+            )
+
+            run_info, fit_meta = self.run_crs(
+                n_live=160,
+                max_iter=10000,
+                max_noimprovement=1000,
+                min_llh_std=0.5,
+                min_vertex_std=dict(x=5, y=5, z=4, time=20),
+                use_sobol=True,
+                seed=0,
+            )
+
+            llhp = self.make_llhp(
+                method=method,
+                log_likelihoods=log_likelihoods,
+                param_values=param_values,
+                aux_values=aux_values,
+                save=save_llhp,
+            )
+
+            self.make_estimate(
+                method=method,
+                llhp=llhp,
+                remove_priors=False,
+                run_info=run_info,
+                fit_meta=fit_meta,
+                save=save_estimate,
+            )
+
         elif method == "fast":
             self.setup_hypo(
                 cascade_kernel="scaling_aligned_point_ckv",
@@ -566,7 +617,8 @@ class Reco(object):
                 z=dict(kind=PRI_UNIFORM, extents=EXT_IC["z"]),
                 time=dict(kind=PRI_TIME_RANGE),
                 track_zenith=dict(
-                    kind=PRI_COSINE, extents=((0, Bound.ABS), (np.pi / 2, Bound.ABS))
+                    kind=PRI_ZEN_COSINE,
+                    extents=((0, Bound.ABS), (np.pi / 2, Bound.ABS))
                 ),
             )
 
@@ -908,23 +960,19 @@ class Reco(object):
             self.generate_prior_method(
                 x=dict(
                     kind=PRI_OSCNEXT_L5_V1_PREFIT,
-                    extents=((-100, Bounds.REL),
-                    (100, Bounds.REL)),
+                    extents=((-100, Bounds.REL), (100, Bounds.REL)),
                 ),
                 y=dict(
                     kind=PRI_OSCNEXT_L5_V1_PREFIT,
-                    extents=((-100, Bounds.REL),
-                    (100, Bounds.REL)),
+                    extents=((-100, Bounds.REL), (100, Bounds.REL)),
                 ),
                 z=dict(
                     kind=PRI_OSCNEXT_L5_V1_PREFIT,
-                    extents=((-50, Bounds.REL),
-                    (50, Bounds.REL)),
+                    extents=((-50, Bounds.REL), (50, Bounds.REL)),
                 ),
                 time=dict(
                     kind=PRI_OSCNEXT_L5_V1_PREFIT,
-                    extents=((-1000, Bounds.REL),
-                    (1000, Bounds.REL)),
+                    extents=((-1000, Bounds.REL), (1000, Bounds.REL)),
                 ),
                 azimuth=dict(kind=PRI_OSCNEXT_L5_V1_PREFIT),
                 zenith=dict(kind=PRI_OSCNEXT_L5_V1_PREFIT),
@@ -936,7 +984,7 @@ class Reco(object):
             if true, explicitly return the transformed cube
         **kwargs
             Prior definitions; anything unspecified falls back to a default
-            (since all params must have priors, including ranges, for e.g.
+            (since all params must have priors and finite ranges for, e.g.,
             MultiNest and CRS).
 
         """
@@ -946,11 +994,11 @@ class Reco(object):
         miscellany = []
         for dim_num, dim_name in enumerate(self.hypo_handler.opt_param_names):
             spec = kwargs.get(dim_name, {})
-            prior_func, prior_def, misc = get_prior_func(
+            prior_func, prior_pdf_func, misc = get_prior_func(
                 dim_num=dim_num, dim_name=dim_name, event=self.event, **spec
             )
             prior_funcs.append(prior_func)
-            self.priors_used[dim_name] = prior_def
+            self.priors_used[dim_name] = prior_pdf_func
             miscellany.append(misc)
 
         def prior(cube, ndim=None, nparams=None):  # pylint: disable=unused-argument, inconsistent-return-statements

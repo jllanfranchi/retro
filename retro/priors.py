@@ -11,14 +11,10 @@ from __future__ import absolute_import, division, print_function
 __all__ = [
     "PRI_UNIFORM",
     "PRI_LOG_UNIFORM",
-    "PRI_LOG_NORMAL",
-    "PRI_COSINE",
-    "PRI_GAUSSIAN",
+    "PRI_ZEN_COSINE",
     "PRI_INTERP",
     "PRI_AZ_INTERP",
     "PRI_TIME_RANGE",
-    "PRI_SPEFIT2",
-    "PRI_SPEFIT2TIGHT",
     "PRI_OSCNEXT_L5_V1_PREFIT",
     "PRI_OSCNEXT_L5_V1_CRS",
     "OSCNEXT_L5_V1_PRIORS",
@@ -58,26 +54,18 @@ if __name__ == "__main__" and __package__ is None:
     if RETRO_DIR not in sys.path:
         sys.path.append(RETRO_DIR)
 from retro import MissingOrInvalidPrefitError
-from retro.const import TWO_PI
 from retro.retro_types import FitStatus
 from retro.utils.misc import LazyLoader
 
 
-PRI_UNIFORM = "uniform"
-PRI_LOG_UNIFORM = "log_uniform"
-PRI_LOG_NORMAL = "log_normal"
-PRI_COSINE = "cosine"
-PRI_GAUSSIAN = "gaussian"
-PRI_INTERP = "interp"
-PRI_AZ_INTERP = "az_interp"
+PRI_UNIFORM = "retro_uniform_prior"
+PRI_LOG_UNIFORM = "retro_loguniform_prior"
+PRI_ZEN_COSINE = "retro_zen_cosine_prior"
+PRI_INTERP = "retro_interpolated_prior"
+PRI_AZ_INTERP = "retro_azimuth_interpolated_prior"
 PRI_TIME_RANGE = "time_range"
-PRI_SPEFIT2 = "spefit2"
-"""From fits to DRAGON (GRECO?) i.e. pre-oscNext MC"""
 
-PRI_SPEFIT2TIGHT = "spefit2tight"
-"""From fits to DRAGON (GRECO?) i.e. pre-oscNext MC"""
-
-PRI_OSCNEXT_L5_V1_PREFIT = "oscnext_l5_v1_prefit"
+PRI_OSCNEXT_L5_V1_PREFIT = "retro_oscnext_l5_v1_prefit_prior"
 """Priors from L5_SPEFit11 (and fallback to LineFit_DC) fits to oscNext level 5
 (first version of processing, or v1) events. See
   retro/notebooks/plot_prior_reco_candidates.ipynb for the fitting process.
@@ -296,14 +284,14 @@ def define_prior_from_prefit(
         low = np.min(xvals)
         high = np.max(xvals)
     else:
-        (low, low_absrel), (high, high_absrel) = extents
-        low = low if low_absrel == Bound.ABS else reco_val + low
-        high = high if high_absrel == Bound.ABS else reco_val + high
+        (low, low_bound_kind), (high, high_bound_kind) = extents
+        low = low if low_bound_kind == Bound.ABS else reco_val + low
+        high = high if high_bound_kind == Bound.ABS else reco_val + high
         # extra correction for bias in LineFit_DC's z reco
         if (reco, dim_name) == ("LineFit_DC", "z"):
-            if low_absrel == Bound.REL:
+            if low_bound_kind == Bound.REL:
                 low -= 15
-            if high_absrel == Bound.REL:
+            if high_bound_kind == Bound.REL:
                 high -= 15
 
     basic_pri_kind = PRI_AZ_INTERP if "azimuth" in dim_name else PRI_INTERP
@@ -329,7 +317,15 @@ def define_generic_prior(kind, extents, kwargs):
     ----------
     kind : str
         Must be a continuous distribution in `scipy.stats.distributions`
-    extents
+
+    extents : sequence of two 2-tuples
+        Format should be .. ::
+
+            ((lower_bound, lower_bound_kind), (upper_bound, upper_bound_kind))
+
+        with {lower,upper}_bound scalars and {lower,upper}_bound_kind of type
+        `Bound`
+
     kwargs : Mapping
         Must contain keys for any `shapes` (shape parameters) taken by the
         distribution as well as "loc" and "scale" (which are required for all
@@ -338,53 +334,141 @@ def define_generic_prior(kind, extents, kwargs):
     Returns
     -------
     prior_def : tuple
-        As defined/used in `retro.priors.get_prior_func`; i.e., formatted as ::
+        As defined/used in `retro.priors.get_prior_func`; e.g., formatted as ::
 
-            (kind, (arg0, arg1, ..., argN, low, high)
+            (kind, (arg0, arg1, ..., argN, low, high))
+
+        where some distributions do not have any args, and thus  will only have
+        `low` and `high`
 
     """
-    loc = kwargs["loc"]
-    scale = kwargs["scale"]
     dist = getattr(stats.distributions, kind)
-    (low, low_absrel), (high, high_absrel) = extents
-    if not low_absrel == high_absrel == Bound.ABS:
-        raise ValueError('Only absolute bound allowed for `kind` "{}"'.format(kind))
+    (low, low_bound_kind), (high, high_bound_kind) = extents
+    if not low_bound_kind == high_bound_kind == Bound.ABS:
+        raise ValueError(
+            "Only absolute bound (`Bound.ABS`) allowed for"
+            " `scipy.stats.distributions` priors (`kind` = {})".format(kind)
+        )
+
+    # Parameters to the dist excluding "loc" and "scale" are listed in
+    # dist.shapes and must be specified first
     if dist.shapes:
         args = []
         for shape_param in dist.shapes:
             args.append(kwargs[shape_param])
-        args = tuple(args)
     else:
-        args = tuple()
-    prior_def = (kind, args + (loc, scale, low, high))
+        args = []
+
+    if "loc" in kwargs:
+        args.append(kwargs["loc"])
+    if "scale" in kwargs:
+        args.append(kwargs["scale"])
+
+    prior_def = (kind, tuple(args + [low, high]))
+
     return prior_def
 
 
-def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
+def get_prior_func(
+    dim_num,
+    dim_name,
+    kind=None,
+    center_relative_to=None,
+    extents=None,
+    extents_relative_to=None,
+    event=None,
+    **kwargs
+):
     """Generate prior function given a prior definition and the actual event
 
     Parameters
     ----------
     dim_num : int
         the cube dimension number from multinest
+
     dim_name : str
         parameter name
-    event : event
-    extents : str or sequence of two floats, optional
-    kwargs : any additional arguments
+
+    kind : str, optional
+        If not provided, uniform-like priors and as-large-as-possible bounds
+        are set automatically (e.g., `dim_name="zenith"` yields a cosine prior
+        defined in [0, pi] which yields samples uniform in cosine-zenith space)
+
+    center_relative_to : str, scalar, or None; optional
+        If a string is provided, `eval` it to retrieve the point at which to
+        center the distribution. E.g., .. ::
+
+            center_relative_to="event['L5_SPEFit11']['x'] if event['L5_SPEFit11']['fit_status'] == FitStatus.OK else event['LineFit_DC']['x']"
+
+        If a scalar is provided, that value will be used directly to shift the
+        distribution. E.g., .. ::
+
+            center_relative_to=35.2
+
+        If None is passed (the default), the distribution will not be shifted.
+        Note that `None` should be passed for prior kinds `PRI_OSCNEXT_*` and
+        other KDE-derived pariors since these priors compute how to center
+        their distributions from the `event` directly.
+
+    extents : sequence of two 2-tuples, optional
+        If not provided, seemingly sensible defaults are defined automatically.
+        E.g., if `dim_name="zenith"` and whether or not a prior `kind` is
+        defined, if `extents` is None, `extents` are set to [0, pi]).
+
+        If provided, format should be .. ::
+
+            ((lower_bound, lower_bound_kind), (upper_bound, upper_bound_kind))
+
+        with `{lower,upper}_bound` scalar values and
+        `{lower,upper}_bound_kind` of type `Bound` (e.g. Bound.ABS or
+        Bound.REL). If any bound is relative, `extents_relative_to` must be
+        specified.
+
+    extents_relative_to : str, scalar, or None; required if any `extents` are relative
+        Specify similarly to `center_relative_to`, but this value determines
+        which point relative bound(s) are centered about.
+
+    event : event dict or None, required sometimes
+        Required if
+
+            * KDE-derived priors are used
+            * Relative center and/or bounds that are specified by a string that
+              contains "event"
+
+    kwargs : mapping, required if prior takes additional arguments
+        Additional arguments to prior `kind`. E.g., `kind="norm"` requires `loc`
+        and `scale`. If any bound is relative or `dist_is_rel=True`,  specify
+        an eval-able string for `realative_to` to make the
+        `relative_to="event['
 
     Returns
     -------
-    prior_func : callable
-    prior_def : tuple
+    prior_func : callable that takes one scalar in [0, 1]
+        Generate samples according to the prior in the range of `extents` by
+        passing uniformly-distributed samples in the domain [0, 1] to
+        `prior_func`
+
+    prior_pdf_func : ufunc-like callable that takes a scalar or ndarray argument
+        Sample the prior function's probability density function at values in
+        `extents`. Use this to remove bias due to the prior by weighting
+        samples by, e.g., .. ::
+
+            >>> samples = np.array([prior_func(x) for x in np.linspace(0, 1, 1000)])
+            >>> probs = prior_pdf_func(samples)
+            >>> hist, edges = np.histogram(samples, weights=1/probs)
+
+        where the resulting `hist` should be roughly uniform.
+
     misc : OrderedDict
+        Metadata fully describing the prior for purposes of result provenance
+        (i.e., save this information to disk)
 
     """
     # -- Set default prior kind & extents depending on dimension name -- #
 
     if "zenith" in dim_name:
         if kind is None:
-            kind = PRI_COSINE
+            kind = PRI_ZEN_COSINE
         if extents is None:
             extents = ((0, Bound.ABS), (np.pi, Bound.ABS))
     elif "coszen" in dim_name:
@@ -435,9 +519,9 @@ def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
                 low = 0
                 high = 0
             else:
-                (low, low_absrel), (high, high_absrel) = extents
-                assert low_absrel == Bound.REL
-                assert high_absrel == Bound.REL
+                (low, low_bound_kind), (high, high_bound_kind) = extents
+                assert low_bound_kind == Bound.REL
+                assert high_bound_kind == Bound.REL
 
             extents = ((time_range[0] + low, Bound.ABS), (time_range[1] + high, Bound.ABS))
 
@@ -448,7 +532,7 @@ def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
         if kind is None:
             kind = PRI_UNIFORM
         if extents is None:
-            if kind in (PRI_LOG_NORMAL, PRI_LOG_UNIFORM):
+            if kind in ("lognorm", PRI_LOG_UNIFORM):
                 extents = ((0.1, Bound.ABS), (1e3, Bound.ABS))
             else:
                 extents = ((0.0, Bound.ABS), (1e3, Bound.ABS))
@@ -460,9 +544,9 @@ def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
 
     misc = OrderedDict()
 
-    if kind in (PRI_UNIFORM, PRI_COSINE):
-        (low, low_absrel), (high, high_absrel) = extents
-        if not low_absrel == high_absrel == Bound.ABS:
+    if kind in (PRI_ZEN_COSINE, PRI_LOG_UNIFORM, PRI_UNIFORM):
+        (low, low_bound_kind), (high, high_bound_kind) = extents
+        if not low_bound_kind == high_bound_kind == Bound.ABS:
             raise ValueError(
                 "Dim #{} ({}): Don't know what to do with relative bounds for prior {}".format(
                     dim_num, dim_name, kind
@@ -507,6 +591,9 @@ def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
         def prior_func(cube, n=dim_num, width=width, low=low):
             cube[n] = cube[n] * width + low
 
+        def prior_pdf_func(samples, area_norm=width):
+            return np.full_like(samples, fill_value=1/area_norm)
+
     elif kind == PRI_LOG_UNIFORM:
         low, high = prior_args
         log_low = np.log(low)
@@ -515,7 +602,10 @@ def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
         def prior_func(cube, n=dim_num, log_width=log_width, log_low=log_low):
             cube[n] = np.exp(cube[n] * log_width + log_low)
 
-    elif kind == PRI_COSINE:
+        def prior_pdf_func(samples, area_norm=log_width):
+            return 1 / (samples * area_norm)
+
+    elif kind == PRI_ZEN_COSINE:
         zen_low, zen_high = prior_args
         cz_low = np.cos(zen_high)
         cz_high = np.cos(zen_low)
@@ -525,13 +615,8 @@ def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
             x = (cz_diff * cube[n]) + cz_low
             cube[n] = np.arccos(x)
 
-    elif kind == PRI_GAUSSIAN:
-        raise NotImplementedError("limits not correctly working")  # TODO
-        mean, stddev, low, high = prior_args
-        norm = 1 / (stddev * np.sqrt(TWO_PI))
-
-        def prior_func(cube, n=dim_num, norm=norm, mean=mean, stddev=stddev):
-            cube[n] = norm * np.exp(-((cube[n] - mean) / stddev) ** 2)
+        def prior_pdf_func(samples):
+            return 0.5 * np.sin(samples)
 
     elif kind in (PRI_INTERP, PRI_AZ_INTERP):
         x, pdf, low, high = prior_args[-4:]
@@ -565,11 +650,11 @@ def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
             # Ensure last value in cdf is exactly 1
             cdf /= cdf[-1]
 
-            # Create smooth spline interpolator for isf (inverse of cdf)
-            isf_interp = interpolate.UnivariateSpline(x=cdf, y=x, ext="raise", s=0)
+            # Create smooth spline interpolator for ppf (inverse of cdf)
+            ppf_interp = interpolate.UnivariateSpline(x=cdf, y=x, ext="raise", s=0)
 
-            def prior_func(cube, n=dim_num, isf_interp=isf_interp):
-                cube[n] = isf_interp(cube[n]) % (2 * np.pi)
+            def prior_func(cube, n=dim_num, ppf_interp=ppf_interp):
+                cube[n] = ppf_interp(cube[n]) % (2 * np.pi)
 
         else:
             # If x covers _more_ than the allowed [low, high] range, resample the
@@ -608,25 +693,53 @@ def get_prior_func(dim_num, dim_name, event, kind=None, extents=None, **kwargs):
             # Ensure last value in cdf is exactly 1
             cdf /= cdf[-1]
 
-            # Create smooth spline interpolator for isf (inverse of cdf)
-            isf_interp = interpolate.UnivariateSpline(x=cdf, y=x, ext="raise", s=0)
+            # Create smooth spline interpolator for ppf (inverse of cdf)
+            ppf_interp = interpolate.UnivariateSpline(x=cdf, y=x, ext="raise", s=0)
 
-            def prior_func(cube, n=dim_num, isf_interp=isf_interp):
-                cube[n] = isf_interp(cube[n])
+            def prior_func(cube, n=dim_num, ppf_interp=ppf_interp):
+                cube[n] = ppf_interp(cube[n])
+
+            # Create smooth spline interpolator for pdf
+            pdf_interp = interpolate.UnivariateSpline(x=x, y=pdf, ext="raise", s=0)
+
+            def prior_pdf_func(samples, pdf_interp=pdf_interp):
+                return pdf_interp(samples)
+
+        # Create smooth spline interpolator for pdf
+        pdf_interp = interpolate.UnivariateSpline(x=x, y=pdf, ext="raise", s=0)
+
+        def prior_pdf_func(samples, pdf_interp=pdf_interp):
+            return pdf_interp(samples)
 
     elif hasattr(stats.distributions, kind):
         dist_args = prior_args[:-2]
         low, high = prior_args[-2:]
-        frozen_dist_isf = getattr(stats.distributions, kind)(*dist_args).isf
+        frozen_dist = getattr(stats.distributions, kind)(*dist_args)
+        frozen_dist_ppf = frozen_dist.ppf
+        frozen_dist_pdf = frozen_dist.pdf
+
+        r_low, r_high = frozen_dist.cdf([low, high])
+        r_width = float(np.abs(r_high - r_low))
 
         def prior_func(
-            cube, frozen_dist_isf=frozen_dist_isf, dim_num=dim_num, low=low, high=high
+            cube,
+            frozen_dist_ppf=frozen_dist_ppf,
+            dim_num=dim_num,
+            low=low,
+            high=high,
+            r_low=r_low,
+            r_width=r_width,
         ):
             cube[dim_num] = np.clip(
-                frozen_dist_isf(cube[dim_num]), a_min=low, a_max=high
+                frozen_dist_ppf(cube[dim_num] * r_width + r_low),
+                a_min=low,
+                a_max=high,
             )
+
+        def prior_pdf_func(samples, frozen_dist_pdf=frozen_dist_pdf, area_norm=r_width):
+            return frozen_dist_pdf(samples) / area_norm
 
     else:
         raise NotImplementedError('Prior "{}" not implemented.'.format(kind))
 
-    return prior_func, prior_def, misc
+    return prior_func, prior_pdf_func, misc

@@ -43,7 +43,7 @@ import traceback
 import warnings
 
 import numpy as np
-from scipy import interpolate, optimize, special, stats
+from scipy import optimize, special, stats
 from six import string_types
 
 if __name__ == '__main__' and __package__ is None:
@@ -51,7 +51,6 @@ if __name__ == '__main__' and __package__ is None:
     if RETRO_DIR not in sys.path:
         sys.path.append(RETRO_DIR)
 import retro
-from retro.priors import PRI_INTERP, PRI_AZ_INTERP
 
 
 DELTA_LLH_CUTOFF = 15.5
@@ -243,7 +242,6 @@ def estimate_from_llhp(
     params = copy(names)
     params.remove('llh')
 
-    num_params = len(params)
     num_llh = len(llhp)
 
     # cut away extremely low llh
@@ -267,55 +265,22 @@ def estimate_from_llhp(
 
     if remove_priors:
         # calculate the prior weights from the priors used
-        for dim, (prior_kind, prior_params) in priors_used.items():
-            if prior_kind == 'uniform':
-                w = None
-            elif prior_kind in ('cauchy', 'spefit2'):
-                w = 1 / stats.cauchy.pdf(llhp[dim], *prior_params[:2])
-            elif prior_kind == 'log_normal' and dim == 'energy':
-                w = 1 / stats.lognorm.pdf(
-                    llhp['track_energy'] + llhp['cascade_energy'],
-                    *prior_params[:3]
-                )
-            elif prior_kind == 'log_uniform' and dim == 'energy':
-                w = llhp['track_energy'] + llhp['cascade_energy']
-            elif prior_kind == 'log_uniform' and dim == 'cascade_energy':
-                w = llhp['cascade_energy']
-            elif prior_kind == 'log_uniform' and dim == 'track_energy':
-                w = llhp['track_energy']
-            elif prior_kind == 'cosine':
-                w = None
-            elif prior_kind == 'log_normal' and dim == 'cascade_d_zenith':
-                w = None
-            elif prior_kind in (PRI_AZ_INTERP, PRI_INTERP):
-                x, pdf, low, high = prior_params[-4:]
-                pdf_interp = interpolate.UnivariateSpline(x=x, y=pdf, ext='raise', s=0)
-                w = 1 / pdf_interp(llhp[dim])
+        for dim, prior_pdf_func in priors_used.items():
+            if dim == 'energy':
+                samples = llhp['track_energy'] + llhp['cascade_energy']
             else:
-                raise NotImplementedError(
-                    'Prior "{}" for dimension/param "{}" is unhandled'
-                    .format(prior_kind, dim)
-                )
+                samples = llhp[dim]
 
-            if w is not None:
-                if treat_dims_independently:
-                    weights[dim] *= w
-                else:
-                    weights *= w
+            if treat_dims_independently:
+                weights[dim] /= prior_pdf_func(samples)
+            else:
+                weights /= prior_pdf_func(samples)
 
-        if treat_dims_independently:
-            if 'energy' in weights:
-                w = prob_weights if use_prob_weights else 1
-                weights['track_energy'] = w * (
-                    llhp['track_energy']
-                    / (llhp['track_energy'] + llhp['cascade_energy'])
-                    * weights['energy']
-                )
-                weights['cascade_energy'] = w * (
-                    llhp['cascade_energy']
-                    / (llhp['track_energy'] + llhp['cascade_energy'])
-                    * weights['energy']
-                )
+        if treat_dims_independently and 'energy' in weights:
+            w = prob_weights if use_prob_weights else 1
+            etot = llhp['track_energy'] + llhp['cascade_energy']
+            weights['track_energy'] = w * llhp['track_energy'] / etot * weights['energy']
+            weights['cascade_energy'] = w * llhp['cascade_energy'] / etot * weights['energy']
 
     if treat_dims_independently:
         postproc_llh = {}
@@ -366,7 +331,7 @@ def estimate_from_llhp(
         50.0 + one_sigma_range / 2,
     ])
 
-    for param_idx, param in enumerate(params):
+    for param in params:
         if treat_dims_independently:
             this_postproc_llh = postproc_llh[param]
             max_idx = np.nanargmax(this_postproc_llh)
@@ -437,9 +402,6 @@ def estimate_from_llhp(
 
         if not (az_name in params and zen_name in params):
             continue
-
-        az_idx = params.index(az_name)
-        zen_idx = params.index(zen_name)
 
         az = cut_llhp[az_name]
         zen = cut_llhp[zen_name]
@@ -576,7 +538,7 @@ def fit_cdf(x, cdf, distribution, x_is_data, verbosity=0):
             print_info(retval)
         return retval
 
-    first_guess_params = OrderedDict([(p, v) for p, v in zip(all_param_names, first_guess)])
+    first_guess_params = OrderedDict(list(zip(all_param_names, first_guess)))
     first_guess_cdf = distribution.cdf(x, **first_guess_params)
     first_guess_mse = np.mean(np.square(first_guess_cdf - cdf))
     t2 = time.time()
@@ -612,7 +574,7 @@ def fit_cdf(x, cdf, distribution, x_is_data, verbosity=0):
             print_info(retval)
         return retval
 
-    best_fit_params = OrderedDict([(p, v) for p, v in zip(all_param_names, best_fit)])
+    best_fit_params = OrderedDict(list(zip(all_param_names, best_fit)))
     best_fit_cdf = distribution.cdf(x, **best_fit_params)
     best_fit_mse = np.mean(np.square(best_fit_cdf - cdf))
     t3 = time.time()
