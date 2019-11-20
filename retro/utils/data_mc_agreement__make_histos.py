@@ -69,6 +69,7 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.append(RETRO_DIR)
 from retro import load_pickle
 from retro.const import DC_STRS
+from retro.i3info.extract_gcd import extract_gcd
 from retro.utils.misc import expand, mkdir, quantize
 from retro.utils.geom import generate_digitizer
 from retro.utils.stats import weighted_percentile
@@ -270,8 +271,8 @@ _HIST_EDGES = OrderedDict(
         ("charge_per_dom", np.logspace(np.log10(0.05), np.log10(3200), NUM_BINS + 1)),
         ("pulses_per_dom", np.logspace(np.log10(1), np.log10(225), NUM_BINS + 1)),
         ("charge_per_pulse", np.logspace(np.log10(1e-2), np.log10(2200), NUM_BINS + 1)),
-        ("time_diffs_within_event", np.linspace(0, 13000, NUM_BINS + 1)),
-        ("time_diffs_within_dom", np.linspace(0, 13000, NUM_BINS + 1)),
+        ("time_diffs_within_event", np.linspace(0, 500, NUM_BINS + 1)),
+        ("time_diffs_within_dom", np.linspace(0, 500, NUM_BINS + 1)),
     ]
 )
 HIST_EDGES = numba.typed.Dict.empty(
@@ -407,7 +408,7 @@ GEO = load_pickle(
 )["geo"]
 
 
-numba_quantize = numba.jit(
+NUMBA_QUANTIZE = numba.jit(
     cache=True,
     nopython=True,
     nogil=True,
@@ -449,11 +450,100 @@ def get_dom_region(dom):
     return (is_dc, z_region)
 
 
+# -- Replicate parts we need from `level_segments_reduced.py`, Alexander Trettin -- #
+
+IC86_STRINGS = set(
+    [
+        21, 29, 39, 38, 30, 40, 50, 59, 49, 58, 67, 66, 74, 73, 65, 72, 78, 48, 57, 47,
+        46, 56, 63, 64, 55, 71, 70, 76, 77, 75, 69, 60, 68, 61, 62, 52, 44, 53, 54, 45,
+        18, 27, 36, 28, 19, 20, 13, 12, 6, 5, 11, 4, 10, 3, 2, 83, 37, 26, 17, 8, 9, 16,
+        25, 85, 84, 82, 81, 86, 35, 34, 24, 15, 23, 33, 43, 32, 42, 41, 51, 31, 22, 14,
+        7, 1, 79, 80,
+    ]
+)
+"""All IC86 strings in deployment order; see
+http://wiki.icecube.wisc.edu/index.php/Deployment_order"""
+
+DEEP_CORE_STRINGS = ([79, 80, 81, 82, 83, 84, 85, 86])
+"""DeepCore strings, in deployment order; see
+http://wiki.icecube.wisc.edu/index.php/Deployment_order"""
+
+IC86_NON_DEEP_CORE_STRINGS = (
+    [s for s in IC86_STRINGS if s not in DEEP_CORE_STRINGS]
+)
+"""Non-DeepCore IC86 strings"""
+
+OUTER_STRINGS = (
+    [
+        31, 41, 51, 60, 68, 75, 76, 77, 78, 72, 73, 74, 67, 59, 50,
+        40, 30, 21, 13, 6, 5, 4, 3, 2, 1, 7, 14, 22,
+    ]
+)
+
+SECOND_VETO_LAYER = (
+    [
+        8, 9, 10, 11, 12, 20, 29, 39, 49, 58, 66, 65, 64, 71, 70, 69,
+        61, 52, 42, 32, 23, 15,
+    ]
+)
+"""second layer from the outside of the detector"""
+
+
+@numba.jit(cache=True, **JIT_KW)
+def calc_coinc_mu_vars(pulses, omgeo):   # srttw pulses
+    """Calculate z-travel in top-15 DOMs on non-DeepCore IC86 strings for a
+    given hit map (pulse series).
+
+    Code adapted from Alexander Trettin, `level_segments_reduced.py`.
+
+    Parameters
+    ----------
+    pulses : ndarray of dtype PULSE_T
+    omgeo : ndarray
+
+    Returns
+    -------
+    z_travel_top15 : float
+    n_outer : int
+
+    Notes
+    -----
+    As of Nov. 2019, cut criteria for removing coincident muons are, using
+    `SRTTWOfflinePulsesDC` pulse series: .. ::
+
+        z_travel_top15 >= 0 and n_outer < 8
+
+    """
+    n_outer = 0
+    z_pulses = []
+    t_pulses = []
+
+    for om in pulses.keys():
+        if om["string"] in IC86_NON_DEEP_CORE_STRINGS and om["om"] <= 15:
+            z_pulses.append(omgeo[om].position.z)
+            t_pulses.append(np.min([p.time for p in pulses[om]]))
+
+        if om["string"] in OUTER_STRINGS:
+            n_outer += 1
+
+    z_pulses = np.array(z_pulses)
+    z_pulses = z_pulses[np.argsort(t_pulses)]
+    if len(z_pulses) >= 4:
+        len_quartile = int(np.floor(len(z_pulses) / 4))
+        mean_first_quartile = np.mean(z_pulses[:len_quartile])
+        z_travel_top15 = np.mean(z_pulses - mean_first_quartile)
+    else:
+        z_travel_top15 = 0.
+
+    return z_travel_top15, n_outer
+
+
 def generate_filter_func(
     fixed_pulse_q=0,
     qntm=0,
     min_pulse_q=0,
     min_evt_p=1,
+    min_evt_d=1,
     min_evt_dt=0,
     max_evt_dt=0,
     # min_evt_t_fract=0,
@@ -465,9 +555,10 @@ def generate_filter_func(
     # min_dom_dt=0,
     max_dom_dt=0,
     integ_t=0,
-    i3=True,
-    dc=True,
-    z_regions=(0, 1, 2),
+    # i3=True,
+    # dc=True,
+    # z_regions=(0, 1, 2),
+    coinc_mu_filt=False,
 ):
     """
     Parameters
@@ -476,6 +567,7 @@ def generate_filter_func(
     qntm : float >= 0
     min_pulse_q : float >= 0
     min_evt_p : int >= 1
+    min_evt_d : int >= 1
     min_evt_dt : float >= 0
     max_evt_dt : float >= 0
     # min_evt_t_fract
@@ -490,9 +582,11 @@ def generate_filter_func(
         pulses
     integ_t : float >= 0
         Integration time in ns. If 0, no integration is performed.
-    i3 : bool
-    dc : bool
-    z_regions : int or tuple of int
+    # i3 : bool
+    # dc : bool
+    # z_regions : int or tuple of int
+    coinc_mu_filt : bool
+        Whether to apply coincident muon filter; see `calc_coinc_mu_vars`
 
     Returns
     -------
@@ -503,6 +597,7 @@ def generate_filter_func(
     assert qntm >= 0
     assert min_pulse_q >= 0
     assert min_evt_p >= 1
+    assert min_evt_d >= 1
     assert 0 <= min_evt_dt <= max_evt_dt
     # assert 0 <= min_evt_t_fract <= max_evt_t_fract <= 1
     # assert t_fract_window >= 0
@@ -512,18 +607,35 @@ def generate_filter_func(
     # assert 0 <= min_dom_dt <= max_dom_dt
     assert max_dom_dt >= 0
     assert integ_t >= 0
-    assert i3 or dc
+    #assert i3 or dc
+    assert isinstance(coinc_mu_filt, bool)
 
-    if np.isscalar(z_regions):
-        z_regions = [z_regions]
-    z_rs = []
-    for z_region in z_regions:
-        assert int(z_region) == z_region, "z_region {} not integer?".format(z_region)
-        z_rs.append(int(z_region))
-    z_regions = tuple(sorted(z_rs))
+    #if np.isscalar(z_regions):
+    #    z_regions = [z_regions]
+    #z_rs = []
+    #for z_region in z_regions:
+    #    assert int(z_region) == z_region, "z_region {} not integer?".format(z_region)
+    #    z_rs.append(int(z_region))
+    #z_regions = tuple(sorted(z_rs))
+
+    omgeo = np.empty(shape=(86, 60, 3))
+    if coinc_mu_filt:
+        gcd_path = join(
+            RETRO_DIR,
+            "data",
+            "/GeoCalibDetectorStatus_AVG_55697-57531_PASS2_SPE_withScaledNoise.i3.gz",
+        )
+        gcd = extract_gcd(gcd_path)
+        omgeo = gcd["geo"]
 
     @numba.jit(cache=False, **JIT_KW)
-    def filter_arrays(events, doms, pulses):
+    def filter_arrays(
+        events,
+        doms,
+        pulses,
+        ic86_non_deep_core_strings=np.array(IC86_NON_DEEP_CORE_STRINGS),
+        outer_strings=np.array(OUTER_STRINGS),
+    ):
         """Get all pulses either inside or outside deepcore
 
         Parameters
@@ -576,15 +688,19 @@ def generate_filter_func(
 
             # event_num_orig_pulses = 0
 
+            n_outer = 0
+            z_pulses = []
+            t_pulses = []
+
             for dom in doms[
                 event["dom_idx0"] : event["dom_idx0"] + event["num_hit_doms"]
             ]:
-                is_dc, z_region = get_dom_region(dom)
+                #is_dc, z_region = get_dom_region(dom)
 
-                is_ic = not is_dc
+                #is_ic = not is_dc
 
-                if not ((dc and is_dc or i3 and is_ic) and z_region in z_regions):
-                    continue
+                #if not ((dc and is_dc or i3 and is_ic) and z_region in z_regions):
+                #    continue
 
                 # `total_num_pulses` can increment in loop over pulses; need to know
                 # value before loop, this is to be populated to `new_doms`
@@ -602,6 +718,15 @@ def generate_filter_func(
                 integ_pulse_total_t = 0.0
                 integ_pulse_total_q = 0.0
                 integ_pulse_total_qt = 0.0
+
+                if (
+                    np.any(dom["string"] == ic86_non_deep_core_strings) and dom["om"] <= 15
+                ):
+                    z_pulses.append(omgeo[int(dom["string"]), int(dom["om"]), 2])
+                    t_pulses.append(dom_pulse_t0)
+
+                if np.any(dom["string"] == outer_strings):
+                    n_outer += 1
 
                 for pulse in pulses[
                     dom["pulses_idx0"] : dom["pulses_idx0"] + dom["num_pulses"]
@@ -626,7 +751,7 @@ def generate_filter_func(
                     pulse_time = pulse["time"]
 
                     if qntm > 0:
-                        pulse_charge = numba_quantize(pulse_charge, qntm=qntm)
+                        pulse_charge = NUMBA_QUANTIZE(pulse_charge, qntm=qntm)
 
                     if min_pulse_q > 0:
                         if pulse_charge < min_pulse_q:
@@ -700,8 +825,22 @@ def generate_filter_func(
 
                 total_num_hit_doms += 1
 
-            # if event_num_orig_pulses < min_evt_p:
-            if event_num_pulses < min_evt_p:
+            if coinc_mu_filt:
+                if len(z_pulses) >= 4:
+                    t_pulses_a = np.array([t for t in t_pulses])
+                    #z_pulses = np.array(z_pulses)
+                    z_pulses = [z_pulses[i] for i in np.argsort(t_pulses_a)]
+                    len_quartile = int(np.floor(len(z_pulses) / 4))
+                    mean_first_quartile = np.mean(np.array([z for z in z_pulses[:len_quartile]]))
+                    z_travel_top15 = np.mean(np.array([z - mean_first_quartile for z in z_pulses]))
+                else:
+                    z_travel_top15 = 0.0
+
+            if (
+                event_num_pulses < min_evt_p
+                or event_num_hit_doms < min_evt_d
+                or (coinc_mu_filt and (z_travel_top15 < 0 or n_outer >= 8))
+            ):
                 # "rewind" all arrays populated in the event loop
                 total_num_pulses -= event_num_pulses
                 total_num_hit_doms -= event_num_hit_doms
@@ -1095,19 +1234,20 @@ def get_histo_fname_prefix(pulse_series, processing_kw, set_key=None):
             continue
         kw[key] = integer_if_integral(val)
 
-    if not isinstance(kw["z_regions"], int):
-        if len(kw["z_regions"]) == 0:
-            raise ValueError()
-        elif len(kw["z_regions"]) == 1:
-            kw["z_regions"] = kw["z_regions"][0]
-            assert int(kw["z_regions"]) == kw["z_regions"]
-            kw["z_regions"] = int(kw["z_regions"])
-        else:
-            z_regions = []
-            for z_region in kw["z_regions"]:
-                assert int(z_region) == z_region
-                z_regions.append(int(z_region))
-            kw["z_regions"] = ",".join(str(r) for r in sorted(z_regions))
+    if "z_regions" in kw:
+        if not isinstance(kw["z_regions"], int):
+            if len(kw["z_regions"]) == 0:
+                raise ValueError()
+            elif len(kw["z_regions"]) == 1:
+                kw["z_regions"] = kw["z_regions"][0]
+                assert int(kw["z_regions"]) == kw["z_regions"]
+                kw["z_regions"] = int(kw["z_regions"])
+            else:
+                z_regions = []
+                for z_region in kw["z_regions"]:
+                    assert int(z_region) == z_region
+                    z_regions.append(int(z_region))
+                kw["z_regions"] = ",".join(str(r) for r in sorted(z_regions))
 
     prefix = "{}__{}".format(
         pulse_series, "__".join("{}={}".format(*it) for it in kw.items())
@@ -1163,6 +1303,7 @@ def plot_vtx_t_dists(
     processing_kw : mapping with kwargs to `generate_filter_func`
 
     """
+    # pylint: disable=import-outside-toplevel
     import matplotlib as mpl
 
     if __name__ == "__main__" and __package__ is None:
@@ -1346,6 +1487,7 @@ def plot(
         any missing histograms will be populated in subprocesses, in parallel.
 
     """
+    # pylint: disable=import-outside-toplevel
     import matplotlib as mpl
 
     if __name__ == "__main__" and __package__ is None:
@@ -1702,6 +1844,7 @@ def parse_args(description=__doc__):
         subp.add_argument("--qntm", type=float, default=0)
         subp.add_argument("--min-pulse-q", type=float, default=0)
         subp.add_argument("--min-evt-p", type=int, default=1)
+        subp.add_argument("--min-evt-d", type=int, default=1)
         subp.add_argument("--min-evt-dt", type=float, default=0)
         subp.add_argument("--max-evt-dt", type=float, default=0)
         # subp.add_argument("--min-evt-t-fract", type=float, default=0)
@@ -1713,17 +1856,18 @@ def parse_args(description=__doc__):
         # subp.add_argument("--min-dom-dt", type=float, default=0)
         subp.add_argument("--max-dom-dt", type=float, default=0)
         subp.add_argument("--integ-t", type=float, default=0)
-        subp.add_argument("--no-i3", action="store_true")
-        subp.add_argument("--no-dc", action="store_true")
-        subp.add_argument("--z-regions", nargs="+", type=int)
+        # subp.add_argument("--no-i3", action="store_true")
+        # subp.add_argument("--no-dc", action="store_true")
+        # subp.add_argument("--z-regions", nargs="+", type=int)
+        subp.add_argument("--coinc-mu-filt", action="store_true")
 
     args = parser.parse_args()
     kwargs = vars(args)
 
-    if "no_i3" in kwargs:
-        kwargs["i3"] = not kwargs.pop("no_i3")
-    if "no_dc" in kwargs:
-        kwargs["dc"] = not kwargs.pop("no_dc")
+    #if "no_i3" in kwargs:
+    #    kwargs["i3"] = not kwargs.pop("no_i3")
+    #if "no_dc" in kwargs:
+    #    kwargs["dc"] = not kwargs.pop("no_dc")
 
     return kwargs
 
