@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# pylint: disable=wrong-import-position, redefined-outer-name, range-builtin-not-iterating, too-many-locals, try-except-raise
+# pylint: disable=wrong-import-position, redefined-outer-name, range-builtin-not-iterating, too-many-locals
 
 """
 Reco class for performing reconstructions
@@ -51,11 +51,12 @@ if __name__ == "__main__" and __package__ is None:
     if RETRO_DIR not in sys.path:
         sys.path.append(RETRO_DIR)
 from retro import __version__, MissingOrInvalidPrefitError, init_obj
+from retro.const import SPEED_OF_LIGHT_M_PER_NS
 from retro.hypo.discrete_cascade_kernels import SCALING_CASCADE_ENERGY
 from retro.hypo.discrete_muon_kernels import pegleg_eval
 from retro.priors import (
     EXT_IC,
-    PRI_ZEN_COSINE,
+    PRI_COSINE,
     PRI_TIME_RANGE,
     PRI_UNIFORM,
     PRISPEC_OSCNEXT_PREFIT_TIGHT,
@@ -63,21 +64,24 @@ from retro.priors import (
     Bound,
     get_prior_func,
 )
-from retro.retro_types import EVT_DOM_INFO_T, EVT_HIT_INFO_T, FitStatus
+from retro.retro_types import EVT_DOM_INFO_T, EVT_HIT_INFO_T, SPHER_T, FitStatus
 from retro.tables.pexp_5d import generate_pexp_and_llh_functions
 from retro.utils.geom import (
     rotate_points,
     add_vectors,
+    fill_from_spher,
+    fill_from_cart,
+    reflect,
 )
 from retro.utils.get_arg_names import get_arg_names
 from retro.utils.misc import sort_dict
 from retro.utils.stats import estimate_from_llhp
 
+
 LLH_FUDGE_SUMMAND = -1000
 
 METHODS = set(
     [
-        "example",
         "multinest",
         "crs",
         "crs_prefit",
@@ -107,36 +111,32 @@ REPORT_AFTER = 100
 CART_DIMS = ("x", "y", "z", "time")
 
 
-class StandaloneEvents(object):
+class Reco(object):
     """
-    Standalone events class to iteratively run recos, as opposed to I3tray Module
+    Setup tables, get events, run reconstructons on them, and optionally store
+    results to disk.
 
-    Paramters
-    ---------
-    events_kw : mapping
+    Note that "recipes" for different reconstructions are defined in the
+    `Reco.run` method.
+
+    Parameters
+    ----------
+    events_kw, dom_tables_kw, tdi_tables_kw : mappings
         As returned by `retro.init_obj.parse_args`
 
+    debug : bool
+
     """
-    def __init__(self, events_kw):
-        # We don't want to specify 'recos' so that new recos are automatically
-        # found by `init_obj.get_events` function
-        events_kw.pop("recos", None)
-        self.events_kw = sort_dict(events_kw)
 
-        # Replace None values for `start` and `step` for fewer branches in
-        # subsequent logic (i.e., these will always be integers)
-        self.events_start = 0 if events_kw["start"] is None else events_kw["start"]
-        self.events_step = 1 if events_kw["step"] is None else events_kw["step"]
-        # Nothing we can do about None for `stop` since we don't know how many
-        # events there are in total.
-        self.events_stop = events_kw["stop"]
-        self.event_counter = 0
+    def __init__(
+        self,
+        events_kw,
+        dom_tables_kw,
+        tdi_tables_kw,
+        debug=False,
+    ):
+        self.debug = bool(debug)
 
-        self.attrs = OrderedDict([("events_kw", self.events_kw)])
-
-    @property
-    def events(self):
-        """Iterator over events.
 
         Yields
         ------
@@ -445,7 +445,7 @@ class Reco(object):
                 track_time_step=1.0,
             )
 
-            self.generate_prior_method(**PRISPEC_OSCNEXT_PREFIT_TIGHT)
+            prior_pdf_func = self.generate_prior_method(**PRISPEC_OSCNEXT_PREFIT_TIGHT)
 
             param_values = []
             log_likelihoods = []
@@ -502,7 +502,7 @@ class Reco(object):
             self.make_estimate(
                 method=method,
                 llhp=llhp,
-                remove_priors=True,
+                priors_used=priors_used,
                 run_info=run_info,
                 fit_meta=fit_meta,
                 save=save_estimate,
@@ -662,19 +662,34 @@ class Reco(object):
             )
 
         elif method == "crs_prefit":
+            # -- Setup hypo (8D) -- #
             self.setup_hypo(
                 cascade_kernel="scaling_aligned_point_ckv",
                 track_kernel="pegleg",
                 track_time_step=3.0,
             )
 
-            self.generate_prior_method(**PRISPEC_OSCNEXT_PREFIT_TIGHT)
+            # -- Define priors from KDE fits to MC & recos in current event -- #
+            prior_specs = {}
+            for dim_name in ["x", "y", "z", "time", "azimuth", "zenith"]:
+                prior_spec, _ = define_prior_from_prefit(
+                    dim_name=dim,
+                    event=self.event,
+                    priors=OSCNEXT_L5_V1_PRIORS,
+                    candidate_recos=["L5_SPEFit11", "LineFit_DC"],
+                    point_estimator="median",
+                    extents=EXT_TIGHT[dim],
+                )
+                prior_specs[dim_name] = prior_spec
+            prior_pdf_funcs = self.generate_prior_method(prior_specs=prior_specs)
 
+            # -- Define (mutable) lists appended to during reco -- #
             param_values = []
             log_likelihoods = []
             aux_values = []
             t_start = []
 
+            # -- Generate the function to evaluate likelihoods -- #
             self.generate_loglike_method(
                 param_values=param_values,
                 log_likelihoods=log_likelihoods,
@@ -682,6 +697,7 @@ class Reco(object):
                 t_start=t_start,
             )
 
+            # -- Run the optimizer -- #
             run_info, fit_meta = self.run_crs(
                 n_live=160,
                 max_iter=10000,
@@ -692,6 +708,7 @@ class Reco(object):
                 seed=0,
             )
 
+            # -- Collect the results of optimization (LLH + param values) -- #
             llhp = self.make_llhp(
                 method=method,
                 log_likelihoods=log_likelihoods,
@@ -700,6 +717,7 @@ class Reco(object):
                 save=save_llhp,
             )
 
+            # -- Derive estimate of parameter values from the LLH + P-vals -- #
             self.make_estimate(
                 method=method,
                 llhp=llhp,
@@ -950,7 +968,7 @@ class Reco(object):
                 #        FitStatus.MissingSeed
                 #    )
 
-    def generate_prior_method(self, return_cube=False, **kwargs):
+    def generate_prior_method(self, prior_specs, return_cube=False):
         """Generate the prior transform method `self.prior` and info
         `self.priors_used` for a given event. Optionally, plots the priors to
         current working directory if `self.debug` is True.
@@ -980,26 +998,27 @@ class Reco(object):
 
         Parameters
         ----------
+        prior_funcs : mapping
+            Prior functions; must be one per dimension. Keys are dimension
+            names and values are mappings containing kwargs for the function
+            `retro.priors.generate_prior_and_pdf_funcs`
+
         return_cube : bool
             if true, explicitly return the transformed cube
-        **kwargs
-            Prior definitions; anything unspecified falls back to a default
-            (since all params must have priors and finite ranges for, e.g.,
-            MultiNest and CRS).
 
         """
         prior_funcs = []
+        prior_pdf_funcs = []
         self.priors_used = OrderedDict()
 
-        miscellany = []
         for dim_num, dim_name in enumerate(self.hypo_handler.opt_param_names):
-            spec = kwargs.get(dim_name, {})
-            prior_func, prior_pdf_func, misc = get_prior_func(
-                dim_num=dim_num, dim_name=dim_name, event=self.event, **spec
+            prior_spec = prior_specs[dim_name]
+            prior_func, prior_pdf_func = get_prior_func(
+                dim_num=dim_num, dim_name=dim_name, **prior_spec
             )
             prior_funcs.append(prior_func)
+            prior_pdf_funcs.append(prior_pdf_func)
             self.priors_used[dim_name] = (prior_func, prior_pdf_func, misc)
-            miscellany.append(misc)
 
         def prior(cube, ndim=None, nparams=None):  # pylint: disable=unused-argument, inconsistent-return-statements
             """Apply `prior_funcs` to the hypercube to map values from the unit
@@ -1022,55 +1041,55 @@ class Reco(object):
 
         self.prior = prior
 
-        if self.debug:
-            # -- Plot priors and save to png's in current dir -- #
-            import matplotlib as mpl
-            mpl.use("agg", warn=False)
-            import matplotlib.pyplot as plt
+        #if self.debug:
+        #    # -- Plot priors and save to png's in current dir -- #
+        #    import matplotlib as mpl
+        #    mpl.use("agg", warn=False)
+        #    import matplotlib.pyplot as plt
 
-            n_opt_params = len(self.hypo_handler.opt_param_names)
-            rand = np.random.RandomState(0)
-            cube = rand.rand(n_opt_params, int(1e5))
-            self.prior(cube)
+        #    n_opt_params = len(self.hypo_handler.opt_param_names)
+        #    rand = np.random.RandomState(0)
+        #    cube = rand.rand(n_opt_params, int(1e5))
+        #    self.prior(cube)
 
-            nx = int(np.ceil(np.sqrt(n_opt_params)))
-            ny = int(np.ceil(n_opt_params / nx))
-            fig, axes = plt.subplots(ny, nx, figsize=(6 * nx, 4 * ny))
-            axit = iter(axes.flat)
-            for dim_num, dim_name in enumerate(self.hypo_handler.opt_param_names):
-                ax = next(axit)
-                ax.hist(cube[dim_num], bins=100)
-                misc = miscellany[dim_num]
-                if "reco_val" in misc:
-                    ylim = ax.get_ylim()
-                    ax.plot([misc["reco_val"]] * 2, ylim, "k--", lw=1)
-                    ax.set_ylim(ylim)
+        #    nx = int(np.ceil(np.sqrt(n_opt_params)))
+        #    ny = int(np.ceil(n_opt_params / nx))
+        #    fig, axes = plt.subplots(ny, nx, figsize=(6 * nx, 4 * ny))
+        #    axit = iter(axes.flat)
+        #    for dim_num, dim_name in enumerate(self.hypo_handler.opt_param_names):
+        #        ax = next(axit)
+        #        ax.hist(cube[dim_num], bins=100)
+        #        misc = miscellany[dim_num]
+        #        if "reco_val" in misc:
+        #            ylim = ax.get_ylim()
+        #            ax.plot([misc["reco_val"]] * 2, ylim, "k--", lw=1)
+        #            ax.set_ylim(ylim)
 
-                misc_strs = []
-                if "reco" in misc:
-                    misc_strs.append(misc["reco"])
-                if "reco_val" in misc:
-                    misc_strs.append("{:.2f}".format(misc["reco_val"]))
-                if (
-                    "split_by_reco_param" in misc
-                    and misc["split_by_reco_param"] is not None
-                ):
-                    misc_strs.append(
-                        "split by {} = {:.2f}".format(
-                            misc["split_by_reco_param"], misc["split_val"]
-                        )
-                    )
-                misc_str = ", ".join(misc_strs)
-                ax.set_title(
-                    "{}: {} {}".format(
-                        dim_name, self.priors_used[dim_name][0], misc_str
-                    )
-                )
-            for ax in axit:
-                ax.axis("off")
-            fig.tight_layout()
-            plt_fpath_base = self.event.meta["prefix"] + "priors"
-            fig.savefig(plt_fpath_base + ".png", dpi=120)
+        #        misc_strs = []
+        #        if "reco" in misc:
+        #            misc_strs.append(misc["reco"])
+        #        if "reco_val" in misc:
+        #            misc_strs.append("{:.2f}".format(misc["reco_val"]))
+        #        if (
+        #            "split_by_reco_param" in misc
+        #            and misc["split_by_reco_param"] is not None
+        #        ):
+        #            misc_strs.append(
+        #                "split by {} = {:.2f}".format(
+        #                    misc["split_by_reco_param"], misc["split_val"]
+        #                )
+        #            )
+        #        misc_str = ", ".join(misc_strs)
+        #        ax.set_title(
+        #            "{}: {} {}".format(
+        #                dim_name, self.priors_used[dim_name][0], misc_str
+        #            )
+        #        )
+        #    for ax in axit:
+        #        ax.axis("off")
+        #    fig.tight_layout()
+        #    plt_fpath_base = self.event.meta["prefix"] + "priors"
+        #    fig.savefig(plt_fpath_base + ".png", dpi=120)
 
     def generate_loglike_method(
         self, param_values, log_likelihoods, aux_values, t_start
@@ -1422,7 +1441,7 @@ class Reco(object):
         return llhp
 
     def make_estimate(
-        self, method, llhp, remove_priors, run_info=None, fit_meta=None, save=True
+        self, method, llhp, priors_used, run_info=None, fit_meta=None, save=True
     ):
         """Create estimate from llhp, attach result to `self.event`, and save to disk.
 
@@ -1431,7 +1450,7 @@ class Reco(object):
         method : str
             Reconstruction method used
         llhp : length-n_llhp array of dtype llhp_t
-        remove_priors : bool
+        priors_used : bool
             Remove effect of priors
         fit_meta : mapping, optional
         save : bool
@@ -2249,27 +2268,9 @@ def get_multinest_meta(outputfiles_basename):
     -------
     fit_meta : OrderedDict
         Contains "logZ", "logZ_err" and, if importance nested sampling was run,
-        "ins_logZ" and "ins_logZ_err"
-
-    """
-    fit_meta = OrderedDict()
-    if isdir(outputfiles_basename):
-        stats_fpath = join(outputfiles_basename, "stats.dat")
-    else:
         stats_fpath = outputfiles_basename + "stats.dat"
 
     with open(stats_fpath, "r") as stats_f:
-        stats = stats_f.readlines()
-
-    logZ, logZ_err = None, None
-    ins_logZ, ins_logZ_err = None, None
-
-    for line in stats:
-        if logZ is None and line.startswith("Nested Sampling Global Log-Evidence"):
-            logZ, logZ_err = [float(x) for x in line.split(":")[1].split("+/-")]
-        elif ins_logZ is None and line.startswith(
-            "Nested Importance Sampling Global Log-Evidence"
-        ):
             ins_logZ, ins_logZ_err = [float(x) for x in line.split(":")[1].split("+/-")]
 
     if logZ is not None:
@@ -2323,7 +2324,7 @@ def main(description=__doc__):
         passed through `eval` and must produce a scalar value interpretable via
         `bool(eval(filter))`. Current event is accessible via the name `event`
         and numpy is named `np`. E.g.,
-        --filter='event["header"]["L5_oscNext_bool"] and len(event["hits"]) >= 8'"""
+        --filter='event["header"]["L5_oscNext_bool"]'"""
     )
 
     split_kwargs = init_obj.parse_args(
@@ -2331,19 +2332,9 @@ def main(description=__doc__):
     )
 
     other_kw = split_kwargs.pop("other_kw")
-
-    events_kw = split_kwargs.pop('events_kw')
-
     my_reco = Reco(**split_kwargs)
+    my_reco.run(**other_kw)
 
-    start_time = time.time()
-
-    my_events = StandaloneEvents(events_kw)
-
-    for event in my_events.events:
-        my_reco.run(event, **other_kw)
-
-    print("Total run time is {:.3f} s".format(time.time() - start_time))
 
 if __name__ == "__main__":
     main()

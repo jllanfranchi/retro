@@ -90,6 +90,8 @@ EXT_TIGHT = dict(
     y=((-200, Bound.REL), (200, Bound.REL)),
     z=((-100, Bound.REL), (100, Bound.REL)),
     time=((-1000, Bound.REL), (1000, Bound.REL)),
+    azimuth=((0, Bound.ABS), (2 * np.pi, Bound.ABS)),
+    zenith=((0, Bound.ABS), (np.pi, Bound.ABS)),
 )
 
 EXT_MN = dict(
@@ -97,6 +99,8 @@ EXT_MN = dict(
     y=((-300, Bound.REL), (300, Bound.REL)),
     z=((-400, Bound.REL), (400, Bound.REL)),
     time=((-1500, Bound.REL), (1500, Bound.REL)),
+    azimuth=((0, Bound.ABS), (2 * np.pi, Bound.ABS)),
+    zenith=((0, Bound.ABS), (np.pi, Bound.ABS)),
 )
 
 EXT_IC = dict(
@@ -296,18 +300,18 @@ def define_prior_from_prefit(
 
     basic_pri_kind = PRI_AZ_INTERP if "azimuth" in dim_name else PRI_INTERP
 
-    prior_def = (
-        basic_pri_kind,
+    prior_def = dict(
+        kind=basic_pri_kind,
         (reco, reco_val, prior_sha256, xvals, pri["pdf"], low, high),
     )
 
-    misc = deepcopy(prior_info["metadata"])
-    misc["prior_file_name"] = prior_fname
-    misc["prior_file_sha256"] = prior_sha256[:10]
-    misc["reco_val"] = reco_val
-    misc["split_val"] = split_val
+    metadata = deepcopy(prior_info["metadata"])
+    metadata["prior_file_name"] = prior_fname
+    metadata["prior_file_sha256"] = prior_sha256[:10]
+    metadata["reco_val"] = reco_val
+    metadata["split_val"] = split_val
 
-    return prior_def, misc
+    return prior_def, metadata
 
 
 def define_generic_prior(kind, extents, kwargs):
@@ -369,15 +373,12 @@ def define_generic_prior(kind, extents, kwargs):
     return prior_def
 
 
-def get_prior_func(
+def generate_prior_and_pdf_funcs(
     dim_num,
     dim_name,
-    kind=None,
-    center_relative_to=None,
-    extents=None,
-    extents_relative_to=None,
-    event=None,
-    **kwargs
+    kind,
+    kind_kwargs,
+    extents,
 ):
     """Generate prior function given a prior definition and the actual event
 
@@ -472,34 +473,7 @@ def get_prior_func(
 
     misc = OrderedDict()
 
-    if kind in (PRI_ZEN_COSINE, PRI_LOG_UNIFORM, PRI_UNIFORM):
-        (low, low_bound_kind), (high, high_bound_kind) = extents
-        if not low_bound_kind == high_bound_kind == Bound.ABS:
-            raise ValueError(
-                "Dim #{} ({}): Don't know what to do with relative bounds for prior {}".format(
-                    dim_num, dim_name, kind
-                )
-            )
-        prior_def = (kind, (low, high))
-    if kind == PRI_OSCNEXT_L5_V1_PREFIT:
-        prior_def, misc = define_prior_from_prefit(
-            dim_name=dim_name,
-            event=event,
-            priors=OSCNEXT_L5_V1_PRIORS,
-            candidate_recos=["L5_SPEFit11", "LineFit_DC"],
-            extents=extents,
-            point_estimator="median",
-        )
-    elif kind == PRI_OSCNEXT_L5_V1_CRS:
-        prior_def, misc = define_prior_from_prefit(
-            dim_name=dim_name,
-            event=event,
-            priors=OSCNEXT_L5_V1_PRIORS,
-            candidate_recos=["retro_crs_prefit"],
-            extents=extents,
-            point_estimator="median",
-        )
-    elif hasattr(stats.distributions, kind):
+    if hasattr(stats.distributions, kind):
         prior_def = define_generic_prior(kind, extents, kwargs)
     else:
         prior_def = (kind, (low, high))
@@ -644,28 +618,26 @@ def get_prior_func(
         dist_args = prior_args[:-2]
         low, high = prior_args[-2:]
         frozen_dist = getattr(stats.distributions, kind)(*dist_args)
-        frozen_dist_ppf = frozen_dist.ppf
-        frozen_dist_pdf = frozen_dist.pdf
 
-        r_low, r_high = frozen_dist.cdf([low, high])
-        r_width = float(np.abs(r_high - r_low))
+        range_low, r_high = frozen_dist.cdf([low, high])
+        range_width = float(np.abs(range_high - range_low))
 
         def prior_func(
             cube,
-            frozen_dist_ppf=frozen_dist_ppf,
+            frozen_dist_ppf=frozen_dist.ppf,
             dim_num=dim_num,
             low=low,
             high=high,
-            r_low=r_low,
-            r_width=r_width,
+            range_low=range_low,
+            range_width=range_width,
         ):
             cube[dim_num] = np.clip(
-                frozen_dist_ppf(cube[dim_num] * r_width + r_low),
+                frozen_dist_ppf(cube[dim_num] * range_width + range_low),
                 a_min=low,
                 a_max=high,
             )
 
-        def prior_pdf_func(samples, frozen_dist_pdf=frozen_dist_pdf, area_norm=r_width):
+        def prior_pdf_func(samples, frozen_dist_pdf=frozen_dist.pdf, area_norm=r_width):
             return frozen_dist_pdf(samples) / area_norm
 
     else:
