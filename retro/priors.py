@@ -145,7 +145,7 @@ for _dim in ("time", "x", "y", "z", "azimuth", "zenith", "coszen"):
         OSCNEXT_L5_V1_PRIORS[_dim][_reco] = LazyLoader(
             datasource=join(
                 RETRO_DIR,
-                "data",
+                "retro_data",
                 "priors",
                 "{reco}_{dim}_neg_error.pkl".format(reco=_reco, dim=_dim),
             )
@@ -302,7 +302,7 @@ def define_prior_from_prefit(
 
     prior_def = dict(
         kind=basic_pri_kind,
-        (reco, reco_val, prior_sha256, xvals, pri["pdf"], low, high),
+        params=(reco, reco_val, prior_sha256, xvals, pri["pdf"], low, high),
     )
 
     metadata = deepcopy(prior_info["metadata"])

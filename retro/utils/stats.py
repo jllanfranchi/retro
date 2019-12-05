@@ -192,7 +192,7 @@ def estimate_from_llhp(
     llhp,
     treat_dims_independently,
     use_prob_weights,
-    priors_used=None,
+    prior_pdf_funcs=None,
     meta=None,
 ):
     """Evaluate estimate for reconstruction quantities given the MultiNest
@@ -211,7 +211,7 @@ def estimate_from_llhp(
     use_prob_weights : boolean
         use LLH weights in computing estimates
 
-    priors_used : dict, optional
+    prior_pdf_funcs : dict or None, optional
         Specify the priors used to remove their effects on the posterior LLH
         distributions; if not specified, effects of priors will not be removed
 
@@ -229,7 +229,7 @@ def estimate_from_llhp(
     # currently spherical averages are not supported if dimensions are treated
     # independently (how would this even work?)
     averages_spherically_aware = not treat_dims_independently
-    remove_priors = bool(priors_used)
+    remove_priors = bool(prior_pdf_funcs)
 
     names = list(llhp.dtype.names)
     #for name in ('llh', 'track_energy', 'cascade_energy'):
@@ -261,11 +261,11 @@ def estimate_from_llhp(
         weights = np.ones(shape=len(llh))
 
     if treat_dims_independently:
-        weights = {dim: deepcopy(weights) for dim in priors_used.keys()}
+        weights = {dim: deepcopy(weights) for dim in prior_pdf_funcs.keys()}
 
     if remove_priors:
         # calculate the prior weights from the priors used
-        for dim, prior_pdf_func in priors_used.items():
+        for dim, prior_pdf_func in prior_pdf_funcs.items():
             if dim == 'energy':
                 samples = llhp['track_energy'] + llhp['cascade_energy']
             else:
