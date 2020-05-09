@@ -71,8 +71,8 @@ from retro.utils.geom import (
     add_vectors,
 )
 from retro.utils.get_arg_names import get_arg_names
-from retro.utils.misc import sort_dict
-from retro.utils.stats import estimate_from_llhp
+from retro.utils.misc import prune, sort_dict
+from retro.utils.stats import THROW_AWAY_DELTA_LLH, estimate_from_llhp
 
 LLH_FUDGE_SUMMAND = -1000
 
@@ -107,6 +107,18 @@ CRS_STOP_FLAGS = {
 
 # TODO: make following args to `__init__` or `run`
 REPORT_AFTER = 100
+
+PRUNE_IF_LONGER_THAN = int(1e4)
+"""Prune lists that keep info for all LLH evaluations if they exceed this
+length. Pruning ONLY removes items corresponding to .. ::
+
+    LLH < max(log_likelihoods) - utils.stats.THROW_AWAY_DELTA_LLH
+
+"""
+
+PRUNE_EVERY = int(1e3)
+"""Create hysteresis so we don't prune after every LLH evaluation once
+len(log_likelihoods) exceeds `PRUNE_IF_LONGER_THAN`"""
 
 CART_DIMS = ("x", "y", "z", "time")
 
@@ -1386,6 +1398,9 @@ class Reco(object):
             np.sum(event_dom_info["total_observed_charge"])
         ), "non-finite charge"
 
+        n_calls = [0]
+        last_pruning = [0]
+
         def loglike(cube, ndim=None, nparams=None):  # pylint: disable=unused-argument
             """Get log likelihood values.
 
@@ -1454,7 +1469,20 @@ class Reco(object):
             param_values.append(result)
 
             log_likelihoods.append(llh)
-            n_calls = len(log_likelihoods)
+            n_calls[0] += 1
+
+            if (
+                len(log_likelihoods) > PRUNE_IF_LONGER_THAN
+                and n_calls[0] - last_pruning[0] > PRUNE_EVERY
+            ):
+                last_pruning[0] = n_calls[0]
+                prune(
+                    THROW_AWAY_DELTA_LLH,
+                    log_likelihoods,
+                    param_values,
+                    aux_values,
+                )
+
             t1 = time.time()
 
             if n_calls % REPORT_AFTER == 0:

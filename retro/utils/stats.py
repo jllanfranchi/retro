@@ -8,6 +8,7 @@ Statistics
 from __future__ import absolute_import, division, print_function
 
 __all__ = [
+    'THROW_AWAY_DELTA_LLH',
     'DELTA_LLH_CUTOFF',
     'EST_KINDS',
     'poisson_llh',
@@ -54,8 +55,14 @@ import retro
 from retro.priors import PRI_INTERP, PRI_AZ_INTERP
 
 
+THROW_AWAY_DELTA_LLH = 30
+"""Crude cutoff (i.e., not considering priors) for LLH values that fall below
+``max-LLH - THROW_AWAY_DELTA_LLH``"""
+
 DELTA_LLH_CUTOFF = 15.5
-"""What values of the llhp space to include relative to the max-LLH point"""
+"""What values of the llhp space to include relative to the max-LLH point for
+careful posterior analysis (i.e., after applying priors to values remaining
+after THROW_AWAY_DELTA_LLH)"""
 
 EST_KINDS = ['lower_bound', 'mean', 'median', 'max', 'upper_bound']
 
@@ -248,7 +255,7 @@ def estimate_from_llhp(
 
     # cut away extremely low llh
     max_llh = np.nanmax(llhp['llh'])
-    llhp = llhp[llhp['llh'] >= (max_llh - 30)]
+    llhp = llhp[llhp['llh'] >= (max_llh - THROW_AWAY_DELTA_LLH)]
     if len(llhp) == 0:
         raise ValueError('no points')
     llh = llhp['llh']

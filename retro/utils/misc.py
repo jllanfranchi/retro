@@ -42,6 +42,8 @@ __all__ = [
     'NSORT_RE',
     'nsort_key_func',
     'quantize',
+    'prune',
+    'test_prune',
 ]
 
 __author__ = 'P. Eller, J.L. Lanfranchi'
@@ -65,7 +67,7 @@ try:
     from collections import Iterable, Mapping, Sequence
 except ImportError:
     from collections.abc import Iterable, Mapping, Sequence
-from copy import deepcopy
+from copy import copy, deepcopy
 import errno
 import hashlib
 from numbers import Number
@@ -963,5 +965,51 @@ def quantize(x, qntm):
     return (np.float64(x) // qntm) * qntm + qntm / 2
 
 
+def prune(delta_thresh, log_likelihoods, *unnamed_lists, **named_lists):
+    """Prune away elements of `log_likelihoods` list and other lists (passed as
+    *args and **kwargs, and assumed to be the same length as `log_likelihoods`)
+    wherever .. ::
+
+        LLH < max(log_likelihoods) - delta_thresh
+
+    Parameters
+    ----------
+    delta_thresh : number >= 0
+    log_likelihoods : length-N mutable sequence containing numbers
+    *unnamed_lists : length-N mutable sequences containing any type
+        Lists to be pruned, passed as args
+    **named_lists : length-N mutable sequences containing any type
+        Lists to be pruned, passed as kwargs
+
+    """
+    x_thresh = max(*log_likelihoods) - delta_thresh
+
+    pruned_idx = 0
+    for _ in range(len(log_likelihoods)):
+        x = log_likelihoods[pruned_idx]
+        if x < x_thresh:
+            log_likelihoods.pop(pruned_idx)
+            for other_list in unnamed_lists + tuple(named_lists.values()):
+                other_list.pop(pruned_idx)
+        else:
+            pruned_idx += 1
+
+
+def test_prune():
+    """Unit tests for `prune` function"""
+    delta_thresh = 2
+    l0 = []
+    l0.extend(np.random.RandomState(0).standard_normal(1000).astype(np.float32))
+    l0a = np.array(l0, dtype=np.float32)
+    ref = l0a[l0a >= (l0a.max() - delta_thresh)]
+    l1 = np.arange(len(l0)).tolist()
+    l2 = copy(l1)
+    prune(delta_thresh, l0, l1, l2=l2)
+    assert np.all(np.array(l0) == ref)
+    assert np.all(l0a[l1] >= l0a.max() - delta_thresh)
+    assert np.all(l0a[l2] >= l0a.max() - delta_thresh)
+
+
 if __name__ == '__main__':
     test_hash_obj()
+    test_prune()
