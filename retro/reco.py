@@ -1293,7 +1293,7 @@ class Reco(object):
 
             t1 = time.time()
 
-            if n_calls % REPORT_AFTER == 0:
+            if n_calls[0] % REPORT_AFTER == 0:
                 print("")
                 if truth_info:
                     msg = "truth:                "
@@ -1315,10 +1315,10 @@ class Reco(object):
                 for key, val in zip(all_param_names, result):
                     msg += " %s=%.1f" % (key, val)
                 print(msg)
-                print("{} LLH computed".format(n_calls))
+                print("{} LLH computed".format(n_calls[0]))
                 print(
                     "avg time per llh: {:.3f} ms".format(
-                        (t_now - t_start[0]) / n_calls * 1000
+                        (t_now - t_start[0]) / n_calls[0] * 1000
                     )
                 )
                 print("this llh took:    {:.3f} ms".format((t1 - t0) * 1000))
