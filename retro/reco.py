@@ -117,9 +117,14 @@ class StandaloneEvents(object):
 
     """
     def __init__(self, events_kw):
-        # We don't want to specify 'recos' so that new recos are automatically
-        # found by `init_obj.get_events` function
-        events_kw.pop("recos", None)
+        # We don't want to specify any retro recos so that new recos are
+        # automatically found by `init_obj.get_events` function
+        recos = events_kw.pop("recos", None)
+        for reco in list(recos):
+            if reco.startswith("retro"):
+                recos.remove(reco)
+        events_kw["recos"] = recos
+
         self.events_kw = sort_dict(events_kw)
 
         # Replace None values for `start` and `step` for fewer branches in
@@ -2374,6 +2379,7 @@ def main(description=__doc__):
     )
     other_kw = split_kwargs.pop("other_kw")
     events_kw = split_kwargs.pop("events_kw")
+    print("events_kw:", events_kw)
 
     my_reco = Reco(**split_kwargs)
     start_time = time.time()

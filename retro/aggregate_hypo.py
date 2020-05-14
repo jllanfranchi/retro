@@ -46,6 +46,12 @@ from retro.hypo import Hypo
 from retro.utils.misc import make_valid_python_name
 
 
+CPUDISPATCHER = (
+    numba.targets.registry.CPUDispatcher if hasattr(numba, "targets")
+    else numba.core.registry.CPUDispatcher
+)
+
+
 class AggregateHypo(Hypo):
     """
     Aggregate together multiple hypotheses (objects of type :class:`retro.hypo.Hypo`).
@@ -207,7 +213,7 @@ class AggregateHypo(Hypo):
         else:
             # Ensure all generators are jit-compiled
             for gens_num, gens in enumerate(pegleg_generators):
-                if not isinstance(gens, numba.targets.registry.CPUDispatcher):
+                if not isinstance(gens, CPUDISPATCHER):
                     try:
                         gens = numba.njit(cache=True, fastmath=False, nogil=True)(gens)
                     except:
@@ -278,7 +284,7 @@ class AggregateHypo(Hypo):
             )
 
             try:
-                exec py_pegleg_generators_str in locals() # pylint: disable=exec-used
+                exec(py_pegleg_generators_str, locals=locals())  # pylint: disable=exec-used
             except:
                 print(py_pegleg_generators_str)
                 raise

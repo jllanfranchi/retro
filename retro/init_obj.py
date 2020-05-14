@@ -911,7 +911,8 @@ def get_hits(
             hits_ = hits_[hits_["charge"] >= min_hit_charge]
         if shift_fadc_time:
             mask = hits_["flags"] == 4  # binary 100 = FADC & (not ATWD) & (not LC)
-            hits_[mask]["time"] -= 25  # ns
+            hits_ = np.copy(hits_)
+            hits_["time"][mask] -= 25
 
         num = len(hits_)
         if num == 0:
@@ -1250,6 +1251,11 @@ def parse_args(
             type=float,
             help="""Remove hits with charge less than this value (after
             quantization has been applied); specify 0 to keep all hits""",
+        )
+        group.add_argument(
+            '--shift-fadc-time', action='store_true',
+            help='''Shift FADC pulses by -25 ns to compensate for apparent
+            simulation bug.''',
         )
 
     args = parser.parse_args()
