@@ -101,7 +101,7 @@ CRS_STOP_FLAGS = {
 }
 
 # TODO: make following args to `__init__` or `run`
-REPORT_AFTER = 100
+REPORT_AFTER = 1000
 
 CART_DIMS = ("x", "y", "z", "time")
 
@@ -217,6 +217,7 @@ class Reco(object):
         reco_pulse_series_name,
         hit_charge_quant,
         min_hit_charge,
+        shift_fadc_time,
         seeding_recos,
         triggers,
         additional_keys,
@@ -239,6 +240,8 @@ class Reco(object):
         min_hit_charge : scalar >= 0
             remove all pulses with charge less than this value (after
             quantization has been applied); specify 0 to keep all pulses
+        shift_fadc_time : bool
+            whether to shift FADC pulses by -25 ns (due to a bug in simulation)
         seeding_recos : list of strings
             recos to load for seeding / constructing priors
         triggers : list of strings
@@ -330,6 +333,7 @@ class Reco(object):
             path=["pulses", reco_pulse_series_name],
             hit_charge_quant=hit_charge_quant,
             min_hit_charge=min_hit_charge,
+            shift_fadc_time=shift_fadc_time,
             angsens_model=None,
         )
 

@@ -376,6 +376,7 @@ def get_events(
     hits=None,
     hit_charge_quant=None,
     min_hit_charge=None,
+    shift_fadc_time=None,
 ):
     """Iterate through a Retro events directory, getting events in a
     the form of a nested OrderedDict, with leaf nodes numpy structured arrays.
@@ -434,6 +435,8 @@ def get_events(
     hit_charge_quant : scalar, required if `hits` specified
 
     min_hit_charge : scalar, required if `hits` specified
+
+    shift_fadc_time : bool, required if `hits` specified
 
     Yields
     ------
@@ -681,6 +684,7 @@ def get_events(
                         path=hits_,
                         hit_charge_quant=hit_charge_quant,
                         min_hit_charge=min_hit_charge,
+                        shift_fadc_time=shift_fadc_time,
                         angsens_model=angsens_model,
                     )
                     event['hits'] = hits_array
@@ -788,7 +792,9 @@ def get_path(event, path):
     return node
 
 
-def get_hits(event, path, hit_charge_quant, min_hit_charge, angsens_model=None):
+def get_hits(
+    event, path, hit_charge_quant, min_hit_charge, shift_fadc_time, angsens_model=None
+):
     """From an event, take either pulses or photons (optionally applying
     weights to the latter for angular sensitivity) and create the three
     structured numpy arrays necessary for Retro to process the information as
@@ -806,6 +812,10 @@ def get_hits(event, path, hit_charge_quant, min_hit_charge, angsens_model=None):
     min_hit_charge : scalar >= 0
         filter out pulses with charge less than this value; 0 disables minimum
         charge filtering
+
+    shift_fadc_time : bool
+        shift FADC pulses by -25 ns (due to a bug in simulation; this should
+        not be applied to data)
 
     angsens_model : str, numpy.polynomial.Polynomial, or None
         If specified and photons are extracted, weights for the photons will be
@@ -899,6 +909,9 @@ def get_hits(event, path, hit_charge_quant, min_hit_charge, angsens_model=None):
             hits_["charge"] = QUANTIZE_VEC(hits_["charge"], hit_charge_quant)
         if min_hit_charge > 0:
             hits_ = hits_[hits_["charge"] >= min_hit_charge]
+        if shift_fadc_time:
+            mask = hits_["flags"] == 4  # binary 100 = FADC & (not ATWD) & (not LC)
+            hits_[mask]["time"] -= 25  # ns
 
         num = len(hits_)
         if num == 0:

@@ -314,6 +314,7 @@ PULSE_T = np.dtype([
     ('time', np.float32),
     ('charge', np.float32),
     ('width', np.float32),
+    ('flags', np.uint8),
 ])
 
 PHOTON_T = np.dtype([

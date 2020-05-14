@@ -693,7 +693,7 @@ def extract_pulses(frame, pulse_series_name):
     for (string, dom, pmt), pinfo in pulse_series:
         pls = []
         for pulse in pinfo:
-            pls.append((pulse.time, pulse.charge, pulse.width))
+            pls.append((pulse.time, pulse.charge, pulse.width, pulse.flags))
         pls = np.array(pls, dtype=PULSE_T)
 
         pulses_list.append(((string, dom, pmt), pls))
