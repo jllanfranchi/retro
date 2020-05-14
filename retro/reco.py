@@ -2379,7 +2379,6 @@ def main(description=__doc__):
     )
     other_kw = split_kwargs.pop("other_kw")
     events_kw = split_kwargs.pop("events_kw")
-    print("events_kw:", events_kw)
 
     my_reco = Reco(**split_kwargs)
     start_time = time.time()
