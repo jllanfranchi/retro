@@ -41,7 +41,6 @@ from copy import deepcopy
 from operator import getitem
 from os import listdir, walk
 from os.path import abspath, dirname, isdir, isfile, join, splitext
-import re
 import sys
 import time
 
@@ -67,18 +66,6 @@ from retro.tables.retro_5d_tables import (
 )
 from retro.utils.misc import expand, nsort_key_func, quantize
 
-
-I3_FNAME_INFO_RE = re.compile(
-    r'''
-    Level(?P<proc_level>.+) # processing level e.g. 5p or 5pt (???)
-    _(?P<detector>[^.]+)    # detector, e.g. IC86
-    \.(?P<year>\d+)         # year
-    _(?P<generator>.+)      # generator, e.g. genie
-    _(?P<flavor>.+)         # flavor, e.g. nue
-    \.(?P<run>\d+)          # run, e.g. 012600
-    \.(?P<filenum>\d+)      # file number, e.g. 000000
-    ''', (re.VERBOSE | re.IGNORECASE)
-)
 
 QUANTIZE_VEC = numba.vectorize(cache=True, target="cpu")(quantize)
 
@@ -851,15 +838,21 @@ def get_hits(
         time_window_start = np.inf
         time_window_stop = -np.inf
         for trigger in trigger_hierarchy:
-            source = trigger['source']
+            if 'key' in trigger.dtype.names:  # New (more correct) TRIGGER_T struct
+                trigger_key = trigger['key']
+                source = trigger_key['source']
+                tr_type = trigger_key['type']
+                config_id = trigger_key['config_id']
+            else:  # old TRIGGER_T had triggerkey fields at same level as trigger
+                source = trigger['source']
+                tr_type = trigger['type']
+                config_id = trigger['config_id']
 
             # Do not expand the in-ice window based on GLOBAL triggers (of
             # any TriggerTypeID)
             if source == TriggerSourceID.GLOBAL:
                 continue
 
-            tr_type = trigger['type']
-            config_id = trigger['config_id']
             tr_time = trigger['time']
 
             # TODO: rework to _only_ use TriggerConfigID?
