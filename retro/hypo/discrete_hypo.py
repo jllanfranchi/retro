@@ -46,6 +46,12 @@ from retro.const import (
 )
 
 
+CPUDISPATCHER = (
+    numba.targets.registry.CPUDispatcher if hasattr(numba, "targets")
+    else numba.core.registry.CPUDispatcher
+)
+
+
 def get_hypo_param_names(kernel):
     """Get the hypothesis parameter names that a hypo kernel takes based on the
     argument names specified by the function.
@@ -59,7 +65,7 @@ def get_hypo_param_names(kernel):
     hypo_param_names : tuple
 
     """
-    if isinstance(kernel, numba.targets.registry.CPUDispatcher):
+    if isinstance(kernel, CPUDISPATCHER):
         py_func = kernel.py_func
     else:
         py_func = kernel

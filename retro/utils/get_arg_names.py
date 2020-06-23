@@ -29,6 +29,12 @@ import inspect
 import numba
 
 
+CPUDISPATCHER = (
+    numba.targets.registry.CPUDispatcher if hasattr(numba, "targets")
+    else numba.core.registry.CPUDispatcher
+)
+
+
 def get_arg_names(func):
     """Extract argument names from a pure-Python or Numba jit-compiled function.
 
@@ -41,7 +47,7 @@ def get_arg_names(func):
     arg_names : tuple of strings
 
     """
-    if isinstance(func, numba.targets.registry.CPUDispatcher):
+    if isinstance(func, CPUDISPATCHER):
         py_func = func.py_func
     else:
         py_func = func
