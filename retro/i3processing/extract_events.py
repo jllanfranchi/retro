@@ -784,7 +784,6 @@ def extract_pulses(frame, pulse_series_name):
         for pulse in pinfo:
             pls.append((pulse.time, pulse.charge, pulse.width, pulse.flags))
         pls = np.array(pls, dtype=rt.PULSE_T)
-
         pulses_list.append(((string, dom, pmt), pls))
 
     return pulses_list, time_range

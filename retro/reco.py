@@ -108,7 +108,7 @@ CRS_STOP_FLAGS = {
 }
 
 # TODO: make following args to `__init__` or `run`
-REPORT_AFTER = 100
+REPORT_AFTER = 1000
 
 CART_DIMS = ("x", "y", "z", "time")
 
@@ -134,9 +134,14 @@ class StandaloneEvents(object):
 
     """
     def __init__(self, events_kw):
-        # We don't want to specify 'recos' so that new recos are automatically
-        # found by `init_obj.get_events` function
-        events_kw.pop("recos", None)
+        # We don't want to specify any retro recos so that new recos are
+        # automatically found by `init_obj.get_events` function
+        recos = events_kw.pop("recos", None)
+        for reco in list(recos):
+            if reco.startswith("retro"):
+                recos.remove(reco)
+        events_kw["recos"] = recos
+
         self.events_kw = sort_dict(events_kw)
 
         # Replace None values for `start` and `step` for fewer branches in
@@ -234,6 +239,7 @@ class Reco(object):
         reco_pulse_series_name,
         hit_charge_quant,
         min_hit_charge,
+        shift_fadc_time,
         seeding_recos,
         triggers,
         additional_keys,
@@ -257,6 +263,8 @@ class Reco(object):
         min_hit_charge : scalar >= 0
             remove all pulses with charge less than this value (after
             quantization has been applied); specify 0 to keep all pulses
+        shift_fadc_time : bool
+            whether to shift FADC pulses by -25 ns (due to a bug in simulation)
         seeding_recos : list of strings
             recos to load for seeding / constructing priors
         triggers : list of strings
@@ -351,6 +359,7 @@ class Reco(object):
             path=["pulses", reco_pulse_series_name],
             hit_charge_quant=hit_charge_quant,
             min_hit_charge=min_hit_charge,
+            shift_fadc_time=shift_fadc_time,
             angsens_model=None,
         )
 

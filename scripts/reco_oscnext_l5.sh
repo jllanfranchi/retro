@@ -134,5 +134,8 @@ $retro_dir/retro/reco.py \
     --hits "pulses/SRTTWOfflinePulsesDC" \
     --hit-charge-quant 0.05 \
     --min-hit-charge 0.25 \
+    --shift-fadc-time \
+    \
+    --recos "L5_SPEFit11" "LineFit_DC" \
 
 wait

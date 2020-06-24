@@ -56,9 +56,26 @@ def main():
         help="""Output I3 file""",
     )
 
+    parser.add_argument("--shift-fadc-time", action="store_true")
+
     split_kwargs = init_obj.parse_args(dom_tables=True, tdi_tables=True, parser=parser)
 
     other_kw = split_kwargs.pop("other_kw")
+
+    # TODO: shift_fadc_time bug only exists in MC, figure out if MC
+    # automatically and apply fix if so
+    #all_files_are_mc = True
+    #for filename in other_kw["input_i3_file"]:
+    #    if is_gcd(filename):
+    #        continue
+    #    if is_data(filename):
+    #        all_files_are_mc = False
+    #        break
+    #    if is_mc(filename):
+    #        continue
+    #    raise ValueError(
+    #        'Cannot identify filename as GCD, MC, or data: "{}"'.format(filename)
+    #    )
 
     # instantiate Retro reco object
     my_reco = Reco(**split_kwargs)
@@ -78,6 +95,7 @@ def main():
         reco_pulse_series_name="SRTTWOfflinePulsesDC",
         hit_charge_quant=0.05,
         min_hit_charge=0.25,
+        shift_fadc_time=other_kw["shift_fadc_time"],  # all_files_are_mc,
         seeding_recos=["L5_SPEFit11", "LineFit_DC"],
         triggers=["I3TriggerHierarchy"],
         additional_keys=["L5_oscNext_bool"],
