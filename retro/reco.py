@@ -61,6 +61,7 @@ from retro.priors import (
     PRISPEC_OSCNEXT_PREFIT_TIGHT,
     PRISPEC_OSCNEXT_CRS,
     PRISPEC_OSCNEXT_CRS_MN,
+    PRISPEC_OSCNEXT_CRS_REFIT,
     Bound,
     get_prior_func,
 )
@@ -81,6 +82,7 @@ METHODS = set(
         "multinest",
         "crs",
         "crs_prefit",
+        "crs_refit",
         "mn8d",
         "emily_ref",
         "emily_test",
@@ -237,6 +239,7 @@ class Reco(object):
         additional_keys,
         filter,
         point_estimator,
+        reco_suffix="",
     ):
         """Method to run Retro reconstructions as part of an I3Tray module
 
@@ -266,6 +269,9 @@ class Reco(object):
             `'event["header"]["L5_oscNext_bool"] and len(event['hits']) >= 8'`
         point_estimator : string in {"max", "mean", "median"}
             which point estimator to use for I3Particles output
+        reco_suffix : string, optional
+            add an optional suffix to the reco names populated to the i3frame
+            e.g. in case re-running the same reconstruction
 
         Usage
         -----
@@ -358,7 +364,7 @@ class Reco(object):
         #    frame=frame,
         #    key="retro_num_hits__{}".format(reco_pulse_series_name),
         #    val=I3Int(int(len(event["hits"]))),
-        #    overwrite=True,
+        #    replace_existing_frame_items=True,
         #)
 
         if isinstance(methods, string_types):
@@ -411,14 +417,15 @@ class Reco(object):
             all_reco_info = extract_all_reco_info(
                 event["recos"][reco_name][0],
                 reco_name=reco_name,
+                reco_suffix=reco_suffix,
             )
 
             for particle, identifier in particles_identifiers:
                 key = "__".join([reco_name, point_estimator, identifier])
-                setitem_pframe(frame, key, particle, overwrite=True)
+                setitem_pframe(frame, key, particle, replace_existing_frame_items=True)
 
             for key, val in all_reco_info.items():
-                setitem_pframe(frame, key, val, overwrite=True)
+                setitem_pframe(frame, key, val, replace_existing_frame_items=True)
 
     def setup_hypo(self, **kwargs):
         """Setup hypothesis and record `n_params` and `n_opt_params`
@@ -663,6 +670,54 @@ class Reco(object):
             )
 
             self.generate_prior_method(**PRISPEC_OSCNEXT_PREFIT_TIGHT)
+
+            param_values = []
+            log_likelihoods = []
+            aux_values = []
+            t_start = []
+
+            self.generate_loglike_method(
+                param_values=param_values,
+                log_likelihoods=log_likelihoods,
+                aux_values=aux_values,
+                t_start=t_start,
+            )
+
+            run_info, fit_meta = self.run_crs(
+                n_live=160,
+                max_iter=10000,
+                max_noimprovement=1000,
+                min_llh_std=0.5,
+                stdthresh=dict(x=5, y=5, z=4, time=20),
+                use_sobol=True,
+                seed=0,
+            )
+
+            llhp = self.make_llhp(
+                method=method,
+                log_likelihoods=log_likelihoods,
+                param_values=param_values,
+                aux_values=aux_values,
+                save=save_llhp,
+            )
+
+            self.make_estimate(
+                method=method,
+                llhp=llhp,
+                remove_priors=False,
+                run_info=run_info,
+                fit_meta=fit_meta,
+                save=save_estimate,
+            )
+
+        elif method == "crs_refit":
+            self.setup_hypo(
+                cascade_kernel="scaling_aligned_point_ckv",
+                track_kernel="pegleg",
+                track_time_step=3.0,
+            )
+
+            self.generate_prior_method(**PRISPEC_OSCNEXT_CRS_REFIT)
 
             param_values = []
             log_likelihoods = []
@@ -1683,7 +1738,8 @@ class Reco(object):
             fit_status=estimate["fit_status"],
         )
 
-    def write_status_npy(self, event, method, fit_status):
+    @staticmethod
+    def write_status_npy(event, method, fit_status):
         """Write fit status to a numpy npy file.
 
         This allows for a fit to fail before useful information about the fit
@@ -2463,7 +2519,7 @@ class Reco(object):
         fit_status = FitStatus.GeneralFailure
         tmpdir = mkdtemp()
         outputfiles_basename = join(tmpdir, "")
-        mn_fit_meta = {}
+        mn_fit_meta = OrderedDict()
         try:
             pymultinest.run(
                 LogLikelihood=self.loglike,
