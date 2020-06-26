@@ -138,7 +138,7 @@ class StandaloneEvents(object):
         # automatically found by `init_obj.get_events` function
         recos = events_kw.pop("recos", None)
         for reco in list(recos):
-            if reco.startswith("retro"):
+            if reco.startswith("retro_crs_refit"):
                 recos.remove(reco)
         events_kw["recos"] = recos
 
@@ -2034,8 +2034,8 @@ class Reco(object):
                 spherical_indices=spherical_pairs,
                 max_iter=max_iter,
                 max_noimprovement=max_noimprovement,
-                fstdthresh=min_llh_std,
-                cstdthresh=cstdthresh,
+                fstd=min_llh_std,
+                cstd=cstdthresh,
                 meta=True,
                 rand=rand,
             )
